@@ -1,261 +1,945 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 from io import BytesIO
 from datetime import datetime
-from fpdf import FPDF
+import json
 
-# Configuration
+# ================================
+# CONFIGURACIÓN Y ESTILOS
+# ================================
+
 st.set_page_config(
-    page_title="Open Match - Modelo Financiero",
+    page_title="💰 Job Match - Proyección Financiera",
     layout="wide",
-    page_icon="📊"
+    page_icon="💸",
+    initial_sidebar_state="expanded"
 )
-st.title("📊 Open Match - Modelo Financiero Interactivo")
 
-# Sidebar Inputs
-st.sidebar.title("⚙️ Supuestos del Modelo")
+st.markdown("""
+<style>
+    .stApp { 
+        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        font-family: 'Inter', sans-serif;
+    }
+    
+    .main-container {
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 20px;
+        padding: 2rem;
+        margin: 1rem;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+    }
+    
+    .metric-card { 
+        background: linear-gradient(145deg, #ffffff, #f0f0f0);
+        border-radius: 15px; 
+        padding: 20px; 
+        margin: 10px 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+        transition: transform 0.3s ease;
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+    }
+    
+    .positive { color: #28a745; font-weight: bold; }
+    .negative { color: #dc3545; font-weight: bold; }
+    .warning { color: #ffc107; font-weight: bold; }
+    
+    .header-title {
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2.5rem;
+        font-weight: 800;
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    
+    .subtitle {
+        text-align: center;
+        color: #6c757d;
+        font-size: 1.1rem;
+        margin-bottom: 2rem;
+    }
+    
+    .section-header {
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 10px;
+        margin: 20px 0 10px 0;
+        font-weight: bold;
+    }
+    
+    .alert-success {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+        padding: 12px;
+        border-radius: 8px;
+        margin: 10px 0;
+    }
+    
+    .alert-danger {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+        padding: 12px;
+        border-radius: 8px;
+        margin: 10px 0;
+    }
+    
+    .sidebar .stSelectbox > div > div {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-with st.sidebar.expander("📅 Período y Precios", expanded=True):
-    meses = st.slider("Duración del modelo (meses)", 12, 60, 36)
-    precio_premium = st.number_input("💰 Precio suscripción premium", 1, 100, 10)
-    precio_basica = st.number_input("💵 Precio suscripción básica", 1, 100, 5)
-    crecimiento_mensual = st.slider("📈 Crecimiento mensual usuarios (%)", 0.0, 50.0, 10.0) / 100
+# ================================
+# FUNCIONES AUXILIARES
+# ================================
 
-with st.sidebar.expander("👥 Usuarios Iniciales", expanded=True):
-    usuarios_premium_inicio = st.number_input("👑 Usuarios premium iniciales", 0, 10000, 50)
-    usuarios_basica_inicio = st.number_input("👤 Usuarios básicos iniciales", 0, 10000, 100)
+def validate_inputs():
+    """Valida las entradas del usuario"""
+    errors = []
+    warnings_list = []
+    
+    if precio_premium <= costo_variable:
+        errors.append("⚠️ El precio premium debe ser mayor al costo variable")
+    
+    if precio_basica <= costo_variable:
+        errors.append("⚠️ El precio básico debe ser mayor al costo variable")
+    
+    if usuarios_premium_inicio + usuarios_basica_inicio == 0:
+        errors.append("⚠️ Debe tener al menos un usuario inicial")
+    
+    if inversion_inicial < sum(sueldos.values()) * 3:
+        warnings_list.append("💭 La inversión inicial podría ser insuficiente para financiar al equipo durante 3 meses")
+    
+    return errors, warnings_list
 
-with st.sidebar.expander("👨‍💼 Sueldos y Gracia", expanded=True):
-    roles = [
-        ("CEO", 3000), ("CTO", 3000), ("Dev", 2500), ("Diseñador", 2000),
-        ("Marketing", 2000), ("Soporte", 1500),
-        ("Gerentes Comerciales", 2500), ("Gerente Financiero", 3000)
-    ]
-    sueldos = {}
-    gracia = {}
-    for nombre, base in roles:
+@st.cache_data(ttl=3600)
+def calcular_proyeccion_financiera(
+    meses, usuarios_premium_inicio, usuarios_basica_inicio, 
+    precio_premium, precio_basica, crecimiento_mensual,
+    sueldos, gracia, costos_fijos, costo_variable,
+    inversion_inicial, tasa_impuestos
+):
+    """Calcula la proyección financiera optimizada"""
+    
+    # Crear DataFrame base
+    df = pd.DataFrame(index=range(1, meses + 1))
+    df.index.name = 'Mes'
+    
+    # Cálculo de usuarios con crecimiento compuesto
+    df['Usuarios_Premium'] = np.round(
+        usuarios_premium_inicio * (1 + crecimiento_mensual) ** (df.index - 1)
+    ).astype(int)
+    
+    df['Usuarios_Basicos'] = np.round(
+        usuarios_basica_inicio * (1 + crecimiento_mensual) ** (df.index - 1)
+    ).astype(int)
+    
+    df['Total_Usuarios'] = df['Usuarios_Premium'] + df['Usuarios_Basicos']
+    
+    # Cálculo de ingresos
+    df['Ingresos_Premium'] = df['Usuarios_Premium'] * precio_premium
+    df['Ingresos_Basicos'] = df['Usuarios_Basicos'] * precio_basica
+    df['Ingresos_Totales'] = df['Ingresos_Premium'] + df['Ingresos_Basicos']
+    
+    # Cálculo de costos de personal (considerando período de gracia)
+    costos_personal_por_mes = []
+    for mes in df.index:
+        costo_mes = sum([
+            sueldos[rol] * cantidad if mes > gracia.get(rol, 0) else 0
+            for rol, cantidad in [
+                ("CEO", 1),
+                ("CTO", 1),
+                ("Dev Fullstack", 2),
+                ("Diseñador UX/UI", 1),
+                ("Growth Marketer", 1),
+                ("Soporte", 1),
+                ("Sales Manager", 2),
+                ("CFO", 1)
+            ]
+        ])
+        costos_personal_por_mes.append(costo_mes)
+    
+    df['Costos_Personal'] = costos_personal_por_mes
+    df['Costos_Fijos'] = df['Costos_Personal'] + costos_fijos['total']
+    df['Costos_Variables'] = df['Total_Usuarios'] * costo_variable
+    df['Costos_Totales'] = df['Costos_Fijos'] + df['Costos_Variables']
+    
+    # Cálculo de utilidades
+    df['Utilidad_Bruta'] = df['Ingresos_Totales'] - df['Costos_Totales']
+    df['Impuestos'] = np.where(
+        df['Utilidad_Bruta'] > 0, 
+        df['Utilidad_Bruta'] * (tasa_impuestos / 100), 
+        0
+    )
+    df['Utilidad_Neta'] = df['Utilidad_Bruta'] - df['Impuestos']
+    
+    # Flujo de efectivo y métricas
+    df['Flujo_Efectivo'] = df['Utilidad_Neta']
+    df['Efectivo_Acumulado'] = df['Flujo_Efectivo'].cumsum() + inversion_inicial
+    
+    # Métricas financieras
+    df['Margen_Bruto'] = np.where(
+        df['Ingresos_Totales'] > 0,
+        df['Utilidad_Bruta'] / df['Ingresos_Totales'],
+        0
+    )
+    
+    df['Margen_Neto'] = np.where(
+        df['Ingresos_Totales'] > 0,
+        df['Utilidad_Neta'] / df['Ingresos_Totales'],
+        0
+    )
+    
+    df['ROI_Acumulado'] = np.where(
+        inversion_inicial > 0,
+        (df['Efectivo_Acumulado'] - inversion_inicial) / inversion_inicial,
+        0
+    )
+    
+    return df.reset_index()
+
+def crear_graficos_principales(df):
+    """Crea los gráficos principales del dashboard"""
+    
+    # Gráfico 1: Ingresos vs Costos vs Utilidad
+    fig1 = go.Figure()
+    fig1.add_trace(go.Scatter(
+        x=df['Mes'], y=df['Ingresos_Totales'],
+        name='Ingresos', line=dict(color='#28a745', width=3),
+        hovertemplate='<b>Ingresos</b><br>Mes %{x}<br>$%{y:,.0f}<extra></extra>'
+    ))
+    fig1.add_trace(go.Scatter(
+        x=df['Mes'], y=df['Costos_Totales'],
+        name='Costos', line=dict(color='#dc3545', width=3),
+        hovertemplate='<b>Costos</b><br>Mes %{x}<br>$%{y:,.0f}<extra></extra>'
+    ))
+    fig1.add_trace(go.Scatter(
+        x=df['Mes'], y=df['Utilidad_Neta'],
+        name='Utilidad Neta', line=dict(color='#007bff', width=3),
+        fill='tonexty', fillcolor='rgba(0,123,255,0.1)',
+        hovertemplate='<b>Utilidad Neta</b><br>Mes %{x}<br>$%{y:,.0f}<extra></extra>'
+    ))
+    fig1.update_layout(
+        title='📈 Evolución Financiera',
+        xaxis_title='Mes',
+        yaxis_title='USD',
+        hovermode='x unified',
+        template='plotly_white',
+        height=450,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    # Gráfico 2: Crecimiento de Usuarios
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(
+        x=df['Mes'], y=df['Usuarios_Premium'],
+        name='Premium', marker_color='#ffc107',
+        hovertemplate='<b>Premium</b><br>Mes %{x}<br>%{y:,.0f} usuarios<extra></extra>'
+    ))
+    fig2.add_trace(go.Bar(
+        x=df['Mes'], y=df['Usuarios_Basicos'],
+        name='Básicos', marker_color='#6c757d',
+        hovertemplate='<b>Básicos</b><br>Mes %{x}<br>%{y:,.0f} usuarios<extra></extra>'
+    ))
+    fig2.update_layout(
+        title='👥 Evolución de Usuarios',
+        xaxis_title='Mes',
+        yaxis_title='Cantidad de Usuarios',
+        hovermode='x unified',
+        template='plotly_white',
+        height=450,
+        barmode='stack'
+    )
+    
+    # Gráfico 3: Métricas Clave
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(
+        x=df['Mes'], y=df['Margen_Bruto'] * 100,
+        name='Margen Bruto (%)', line=dict(color='#20c997', width=2),
+        hovertemplate='<b>Margen Bruto</b><br>Mes %{x}<br>%{y:.1f}%<extra></extra>'
+    ))
+    fig3.add_trace(go.Scatter(
+        x=df['Mes'], y=df['Margen_Neto'] * 100,
+        name='Margen Neto (%)', line=dict(color='#6610f2', width=2),
+        hovertemplate='<b>Margen Neto</b><br>Mes %{x}<br>%{y:.1f}%<extra></extra>'
+    ))
+    fig3.add_trace(go.Scatter(
+        x=df['Mes'], y=df['ROI_Acumulado'] * 100,
+        name='ROI Acumulado (%)', line=dict(color='#fd7e14', width=2),
+        hovertemplate='<b>ROI Acumulado</b><br>Mes %{x}<br>%{y:.1f}%<extra></extra>'
+    ))
+    fig3.update_layout(
+        title='📊 Métricas de Rentabilidad',
+        xaxis_title='Mes',
+        yaxis_title='Porcentaje (%)',
+        hovermode='x unified',
+        template='plotly_white',
+        height=450
+    )
+    
+    return fig1, fig2, fig3
+
+def generar_reporte_ejecutivo(df):
+    """Genera un reporte ejecutivo en markdown con explicación de la inversión inicial"""
+    
+    # Encontrar el mes de break-even
+    try:
+        break_even_mes = df[df['Utilidad_Neta'] > 0]['Mes'].iloc[0]
+        break_even_text = f"Mes {break_even_mes}"
+    except IndexError:
+        break_even_text = "No alcanzado en el período"
+    
+    # Calcular métricas clave
+    ingresos_totales = df['Ingresos_Totales'].sum()
+    usuarios_promedio = df['Total_Usuarios'].mean()
+    ltv_estimado = ingresos_totales / usuarios_promedio if usuarios_promedio > 0 else 0
+    crecimiento_promedio = df['Total_Usuarios'].pct_change().mean() * 100
+    
+    return f"""
+    ### 📋 REPORTE EJECUTIVO
+    
+    **🎯 Punto de Equilibrio:** {break_even_text}
+    
+    **📈 Métricas de Crecimiento:**
+    - Crecimiento promedio mensual: {crecimiento_promedio:.1f}%
+    - Usuarios finales proyectados: {df['Total_Usuarios'].iloc[-1]:,}
+    
+    **💰 Métricas Financieras:**
+    - LTV estimado por usuario: ${ltv_estimado:.0f}
+    - Margen neto final: {df['Margen_Neto'].iloc[-1]:.1%}
+    - ROI total del proyecto: {df['ROI_Acumulado'].iloc[-1]:.1%}
+    
+    **💵 Flujo de Caja:**
+    - Efectivo final proyectado: ${df['Efectivo_Acumulado'].iloc[-1]:,}
+    - Mejor mes (utilidad): ${df['Utilidad_Neta'].max():,}
+    - Peor mes (utilidad): ${df['Utilidad_Neta'].min():,}
+    
+    **🔍 Impacto de la Inversión Inicial:**
+    La inversión inicial de **${inversion_inicial:,}** permite cubrir el flujo de caja de los primeros meses en que el proyecto genera pérdidas operativas. 
+    - Durante el período de lanzamiento, los costos fijos y de nómina superan los ingresos, por lo que el capital inicial financia esas diferencias.
+    - Conforme la adquisición de usuarios crece, el flujo de efectivo acumulado tiende a volverse positivo, recuperando gradualmente la inversión.
+    - Si la inversión inicial es insuficiente, se requerirá financiamiento adicional para evitar riesgo de quiebra antes de alcanzar el punto de equilibrio.
+    """
+
+# ================================
+# INTERFAZ PRINCIPAL
+# ================================
+
+# Header principal
+st.markdown('<h1 class="header-title">💸 Job Match </h1>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Proyección Financiera Interactiva</p>', unsafe_allow_html=True)
+
+# ================================
+# SIDEBAR CON PARÁMETROS
+# ================================
+
+with st.sidebar:
+    st.markdown("## ⚙️ CONFIGURACIÓN DEL MODELO")
+    
+    # Sección 1: Período y Precios
+    with st.expander("📅 PERÍODO Y PRECIOS", expanded=True):
+        meses = st.slider("Duración del modelo (meses)", 12, 60, 36, 
+                         help="Horizonte de proyección financiera")
+        
         col1, col2 = st.columns(2)
         with col1:
-            sueldos[nombre] = st.number_input(f"{nombre}", 0, 20000, base, key=f"sueldo_{nombre}")
+            precio_premium = st.number_input("💰 Precio Premium ($)", 1, 200, 15, 
+                                           help="Precio mensual suscripción premium")
         with col2:
-            gracia[nombre] = st.number_input(f"Gracia", 0, 12, 0, key=f"gracia_{nombre}")
-
-with st.sidebar.expander("💸 Costos Operativos", expanded=True):
-    infraestructura = st.number_input("☁️ Infraestructura en la nube", 0, 10000, 1000)
-    legales = st.number_input("⚖️ Legales y contables", 0, 10000, 500)
-    appstore = st.number_input("📱 Comisión App Stores", 0, 10000, 300)
-    otros = st.number_input("📦 Otros gastos", 0, 10000, 200)
-    costo_variable = st.number_input("👥 Costo variable por usuario", 0, 100, 3)
-
-with st.sidebar.expander("🏦 Financiamiento", expanded=True):
-    inversion_inicial = st.number_input("💳 Inversión inicial (USD)", 0, 50000, 15000)
-    deuda_mensual = st.number_input("🏧 Cuota mensual deuda (USD)", 0, 10000, 1000)
-    tasa_interes_anual = st.slider("📉 Tasa interés anual (%)", 0.0, 50.0, 12.0)
-    tasa_impuestos = st.slider("🏛️ Tasa de impuestos (%)", 0.0, 50.0, 19.0)
-
-# Generación de proyección
-@st.cache_data(ttl=1)  # Cache for 1 second to allow updates
-def generar_proyeccion():
-    df = pd.DataFrame()
-    deuda_total = deuda_mensual * meses
-    interes_mensual = (tasa_interes_anual / 12) / 100
-
-    for i in range(1, meses + 1):
-        mes = f"Mes {i}"
-        up = round(usuarios_premium_inicio * (1 + crecimiento_mensual) ** (i - 1))
-        ub = round(usuarios_basica_inicio * (1 + crecimiento_mensual) ** (i - 1))
-        ingresos = up * precio_premium + ub * precio_basica
-
-        # Calculate staff costs
-        costos_personal = sum([
-            sueldos["CEO"] if i > gracia["CEO"] else 0,
-            sueldos["CTO"] if i > gracia["CTO"] else 0,
-            sueldos["Dev"] * 2 if i > gracia["Dev"] else 0,
-            sueldos["Diseñador"] if i > gracia["Diseñador"] else 0,
-            sueldos["Marketing"] if i > gracia["Marketing"] else 0,
-            sueldos["Soporte"] if i > gracia["Soporte"] else 0,
-            sueldos["Gerentes Comerciales"] * 2 if i > gracia["Gerentes Comerciales"] else 0,
-            sueldos["Gerente Financiero"] if i > gracia["Gerente Financiero"] else 0
-        ])
+            precio_basica = st.number_input("💵 Precio Básico ($)", 1, 200, 7, 
+                                          help="Precio mensual suscripción básica")
         
-        costos_fijos = costos_personal + infraestructura + legales + appstore + otros
-        costos_variable_total = (up + ub) * costo_variable
-        intereses = deuda_total * interes_mensual
-        total_costos = costos_fijos + costos_variable_total + intereses
-        utilidad_bruta = ingresos - total_costos
-        impuestos = max(utilidad_bruta, 0) * (tasa_impuestos / 100)
-        utilidad_neta = utilidad_bruta - impuestos
-
-        df = pd.concat([df, pd.DataFrame({
-            "Mes": [mes],
-            "Usuarios Premium": [up],
-            "Usuarios Básicos": [ub],
-            "Total Usuarios": [up + ub],
-            "Ingresos Totales": [ingresos],
-            "Costos Fijos": [costos_fijos],
-            "Costos Variables": [costos_variable_total],
-            "Intereses": [intereses],
-            "Costos Totales": [total_costos],
-            "Utilidad Bruta": [utilidad_bruta],
-            "Impuestos": [impuestos],
-            "Utilidad Neta": [utilidad_neta]
-        })], ignore_index=True)
-
-    df["Efectivo Acumulado"] = df["Utilidad Neta"].cumsum() - inversion_inicial
-    df["Activos Intangibles"] = 20000
-    df["Activo Total"] = df["Efectivo Acumulado"] + df["Activos Intangibles"]
-    df["Pasivo"] = deuda_total
-    df["Patrimonio"] = df["Efectivo Acumulado"]
+        crecimiento_mensual = st.slider("📈 Crecimiento usuarios/mes (%)", 
+                                       0.0, 50.0, 12.0, step=0.5) / 100
     
-    # Calculate financial metrics
-    df["Margen Bruto"] = (df["Utilidad Bruta"] / df["Ingresos Totales"]).fillna(0)
-    df["Margen Neto"] = (df["Utilidad Neta"] / df["Ingresos Totales"]).fillna(0)
-    df["ROI"] = (df["Utilidad Neta"] / inversion_inicial).fillna(0)
+    # Sección 2: Usuarios Iniciales
+    with st.expander("👥 BASE DE USUARIOS", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            usuarios_premium_inicio = st.number_input("👑 Premium iniciales", 0, 50000, 100)
+        with col2:
+            usuarios_basica_inicio = st.number_input("👤 Básicos iniciales", 0, 50000, 200)
     
-    return df
+    # Sección 3: Equipo y Sueldos
+    with st.expander("👨‍💼 EQUIPO Y NÓMINA"):
+        roles_data = {
+            "CEO": 3500, "CTO": 3200, "Dev Fullstack": 2800,
+            "Diseñador UX/UI": 2300, "Growth Marketer": 2500,
+            "Soporte": 1800, "Sales Manager": 2700, "CFO": 3200
+        }
+        
+        sueldos = {}
+        gracia = {}
+        
+        for rol, sueldo_base in roles_data.items():
+            st.markdown(f"**{rol}**")
+            col1, col2 = st.columns(2)
+            with col1:
+                sueldos[rol] = st.number_input(
+                    f"Sueldo", 0, 20000, sueldo_base, 
+                    key=f"sueldo_{rol}", help=f"Sueldo mensual para {rol}"
+                )
+            with col2:
+                gracia_default = 3 if rol == "CEO" else 0
+                gracia[rol] = st.number_input(
+                    f"Gracia (meses)", 0, 12, gracia_default,
+                    key=f"gracia_{rol}", help=f"Meses sin pago para {rol}"
+                )
+    
+    # Sección 4: Costos Operativos
+    with st.expander("💳 COSTOS OPERATIVOS"):
+        st.markdown("**Costos Fijos Mensuales**")
+        infraestructura = st.number_input("☁️ Infraestructura/Hosting", 0, 20000, 1200)
+        legales = st.number_input("⚖️ Legales/Contabilidad", 0, 10000, 800)
+        appstore = st.number_input("📱 Comisiones App Stores", 0, 10000, 500)
+        marketing = st.number_input("📢 Marketing/Publicidad", 0, 20000, 1500)
+        otros = st.number_input("📦 Otros gastos fijos", 0, 10000, 300)
+        
+        costos_fijos = {
+            'infraestructura': infraestructura,
+            'legales': legales,
+            'appstore': appstore,
+            'marketing': marketing,
+            'otros': otros,
+            'total': infraestructura + legales + appstore + marketing + otros
+        }
+        
+        st.markdown("**Costos Variables**")
+        costo_variable = st.number_input("👥 Costo por usuario/mes", 0.0, 50.0, 2.5, 
+                                       step=0.1, help="Costo variable por usuario activo")
+    
+    # Sección 5: Financiamiento
+    with st.expander("🏦 FINANCIAMIENTO E IMPUESTOS"):
+        inversion_inicial = st.number_input("💵 Inversión inicial ($)", 0, 500000, 25000,
+                                          help="Capital inicial disponible")
+        tasa_impuestos = st.slider("🏛️ Tasa de impuestos (%)", 0.0, 50.0, 19.0, 
+                                 step=0.5, help="Tasa impositiva sobre utilidades")
 
-df = generar_proyeccion()
+# ================================
+# VALIDACIONES
+# ================================
 
-# Main Dashboard
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Resumen", "📈 Gráficos", "📋 Detalles", "📤 Exportar"])
+errors, warnings = validate_inputs()
 
+if errors:
+    for error in errors:
+        st.error(error)
+    st.stop()
+
+if warnings:
+    for warning in warnings:
+        st.warning(warning)
+
+# ================================
+# CÁLCULOS PRINCIPALES
+# ================================
+
+with st.spinner("Calculando proyección financiera..."):
+    df = calcular_proyeccion_financiera(
+        meses, usuarios_premium_inicio, usuarios_basica_inicio,
+        precio_premium, precio_basica, crecimiento_mensual,
+        sueldos, gracia, costos_fijos, costo_variable,
+        inversion_inicial, tasa_impuestos
+    )
+
+# ================================
+# DASHBOARD PRINCIPAL
+# ================================
+
+# Pestañas principales
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 RESUMEN EJECUTIVO", "📈 VISUALIZACIONES", "🧮 DATOS DETALLADOS", 
+    "🎯 ANÁLISIS AVANZADO", "📤 EXPORTAR"
+])
+
+# ================================
+# TAB 1: RESUMEN EJECUTIVO
+# ================================
 with tab1:
-    st.subheader("📌 Resumen Ejecutivo")
-    col1, col2, col3 = st.columns(3)
+    st.markdown("### 📈 MÉTRICAS CLAVE")
+    
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Usuarios Finales", f"{df['Total Usuarios'].iloc[-1]:,.0f}")
-        st.metric("Ingresos Mensuales Finales", f"${df['Ingresos Totales'].iloc[-1]:,.0f}")
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric(
+            "👥 Usuarios Finales", 
+            f"{df['Total_Usuarios'].iloc[-1]:,.0f}",
+            delta=f"+{df['Total_Usuarios'].iloc[-1] - (usuarios_premium_inicio + usuarios_basica_inicio):,.0f}"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        crecimiento_total = ((df['Total_Usuarios'].iloc[-1] / (usuarios_premium_inicio + usuarios_basica_inicio)) - 1) * 100
+        st.metric("📈 Crecimiento Total", f"{crecimiento_total:.0f}%")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        st.metric("Utilidad Neta Final", f"${df['Utilidad Neta'].iloc[-1]:,.0f}")
-        st.metric("Margen Neto Final", f"{df['Margen Neto'].iloc[-1]:.1%}")
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric(
+            "💰 Ingresos Mensuales", 
+            f"${df['Ingresos_Totales'].iloc[-1]:,.0f}",
+            delta=f"${df['Ingresos_Totales'].iloc[-1] - df['Ingresos_Totales'].iloc[0]:,.0f}"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("💸 Costos Mensuales", f"${df['Costos_Totales'].iloc[-1]:,.0f}")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
-        st.metric("Efectivo Acumulado", f"${df['Efectivo Acumulado'].iloc[-1]:,.0f}")
-        st.metric("ROI Total", f"{df['ROI'].iloc[-1]:.1%}")
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        utilidad_final = df['Utilidad_Neta'].iloc[-1]
+        delta_color = "normal" if utilidad_final >= 0 else "inverse"
+        st.metric(
+            "🎯 Utilidad Mensual Final", 
+            f"${abs(utilidad_final):,.0f}",
+            delta=f"{'Positiva' if utilidad_final >= 0 else 'Negativa'}",
+            delta_color=delta_color
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("📊 Margen Neto Final", f"{df['Margen_Neto'].iloc[-1]:.1%}")
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    st.subheader("📅 Proyección Mensual")
-    st.dataframe(df[["Mes", "Usuarios Premium", "Usuarios Básicos", "Ingresos Totales", 
-                    "Costos Totales", "Utilidad Neta"]].style.format({
-        "Usuarios Premium": "{:,.0f}",
-        "Usuarios Básicos": "{:,.0f}",
-        "Ingresos Totales": "${:,.0f}",
-        "Costos Totales": "${:,.0f}",
-        "Utilidad Neta": "${:,.0f}"
-    }), height=400)
+    with col4:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        efectivo_final = df['Efectivo_Acumulado'].iloc[-1]
+        st.metric(
+            "💵 Efectivo Acumulado", 
+            f"${abs(efectivo_final):,.0f}",
+            delta=f"{'Positivo' if efectivo_final >= 0 else 'Negativo'}",
+            delta_color="normal" if efectivo_final >= 0 else "inverse"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("🚀 ROI Total", f"{df['ROI_Acumulado'].iloc[-1]:.1%}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Reporte ejecutivo con explicación del impacto de la inversión inicial
+    st.markdown(generar_reporte_ejecutivo(df), unsafe_allow_html=True)
+    
+    # Estado del negocio según flujo e utilidad
+    if df['Efectivo_Acumulado'].iloc[-1] > 0 and df['Utilidad_Neta'].iloc[-1] > 0:
+        st.markdown(
+            '<div class="alert-success">✅ <strong>Estado: SALUDABLE</strong> - El modelo es rentable y sostenible.</div>',
+            unsafe_allow_html=True
+        )
+    elif df['Utilidad_Neta'].iloc[-1] > 0:
+        st.markdown(
+            '<div class="alert-success">⚠️ <strong>Estado: EN CRECIMIENTO</strong> - Rentable pero requiere gestión de capital.</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<div class="alert-danger">🚨 <strong>Estado: REQUIERE AJUSTES</strong> - El modelo necesita optimización.</div>',
+            unsafe_allow_html=True
+        )
 
+# ================================
+# TAB 2: VISUALIZACIONES
+# ================================
 with tab2:
-    st.subheader("📈 Tendencias Clave")
+    st.markdown("### 📊 ANÁLISIS VISUAL INTERACTIVO")
     
-    # Calculate proper tick spacing
-    tick_spacing = max(1, meses // 12)
-    x_ticks = np.arange(0, meses, tick_spacing)
-    x_labels = df["Mes"][::tick_spacing]
+    fig1, fig2, fig3 = crear_graficos_principales(df)
+    st.plotly_chart(fig1, use_container_width=True)
+    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig3, use_container_width=True)
     
-    fig1, ax1 = plt.subplots(figsize=(10, 4))
-    ax1.plot(df["Mes"], df["Ingresos Totales"], label="Ingresos", color="green")
-    ax1.plot(df["Mes"], df["Costos Totales"], label="Costos", color="red")
-    ax1.plot(df["Mes"], df["Utilidad Neta"], label="Utilidad Neta", color="blue")
-    ax1.axhline(0, linestyle="--", color="gray")
-    ax1.set_xticks(x_ticks)
-    ax1.set_xticklabels(x_labels, rotation=45)
-    ax1.set_ylabel("USD")
-    ax1.legend()
-    ax1.grid(True, linestyle="--", alpha=0.7)
-    st.pyplot(fig1)
+    st.markdown("### 💰 ANÁLISIS DE FLUJO DE EFECTIVO")
+    fig4 = go.Figure()
     
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
-    ax2.plot(df["Mes"], df["Usuarios Premium"], label="Premium", color="gold")
-    ax2.plot(df["Mes"], df["Usuarios Básicos"], label="Básicos", color="silver")
-    ax2.set_xticks(x_ticks)
-    ax2.set_xticklabels(x_labels, rotation=45)
-    ax2.set_ylabel("Usuarios")
-    ax2.legend()
-    ax2.grid(True, linestyle="--", alpha=0.7)
-    st.pyplot(fig2)
+    positive_mask = df['Efectivo_Acumulado'] >= 0
+    negative_mask = df['Efectivo_Acumulado'] < 0
     
-    fig3, ax3 = plt.subplots(figsize=(10, 4))
-    ax3.plot(df["Mes"], df["Margen Bruto"]*100, label="Margen Bruto", color="green")
-    ax3.plot(df["Mes"], df["Margen Neto"]*100, label="Margen Neto", color="blue")
-    ax3.set_xticks(x_ticks)
-    ax3.set_xticklabels(x_labels, rotation=45)
-    ax3.set_ylabel("Porcentaje (%)")
-    ax3.legend()
-    ax3.grid(True, linestyle="--", alpha=0.7)
-    st.pyplot(fig3)
+    if positive_mask.any():
+        fig4.add_trace(go.Scatter(
+            x=df.loc[positive_mask, 'Mes'],
+            y=df.loc[positive_mask, 'Efectivo_Acumulado'],
+            fill='tozeroy', fillcolor='rgba(40, 167, 69, 0.3)',
+            line=dict(color='#28a745'), name='Efectivo Positivo',
+            hovertemplate='<b>Efectivo Acumulado</b><br>Mes %{x}<br>$%{y:,.0f}<extra></extra>'
+        ))
+    if negative_mask.any():
+        fig4.add_trace(go.Scatter(
+            x=df.loc[negative_mask, 'Mes'],
+            y=df.loc[negative_mask, 'Efectivo_Acumulado'],
+            fill='tozeroy', fillcolor='rgba(220, 53, 69, 0.3)',
+            line=dict(color='#dc3545'), name='Efectivo Negativo',
+            hovertemplate='<b>Efectivo Acumulado</b><br>Mes %{x}<br>$%{y:,.0f}<extra></extra>'
+        ))
+    fig4.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
+    fig4.update_layout(
+        title='💰 Evolución del Flujo de Efectivo Acumulado',
+        xaxis_title='Mes',
+        yaxis_title='Efectivo Acumulado (USD)',
+        template='plotly_white',
+        height=400,
+        showlegend=True
+    )
+    st.plotly_chart(fig4, use_container_width=True)
 
+# ================================
+# TAB 3: DATOS DETALLADOS
+# ================================
 with tab3:
-    st.subheader("📋 Detalle Financiero")
-    st.dataframe(df)
-
-with tab4:
-    st.subheader("📤 Exportar Reporte")
+    st.markdown("### 🧮 DATOS DETALLADOS (Con Costo de Inversión Inicial)")
     
-    def create_pdf(df):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        
-        # Title
-        pdf.cell(200, 10, txt="Open Match - Reporte Financiero", ln=1, align="C")
-        pdf.cell(200, 10, txt=f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align="C")
-        
-        # Summary
-        pdf.cell(200, 10, txt="Resumen Ejecutivo", ln=1, align="L")
-        pdf.cell(200, 10, txt=f"Duración: {meses} meses", ln=1)
-        pdf.cell(200, 10, txt=f"Usuarios finales: {df['Total Usuarios'].iloc[-1]:,.0f}", ln=1)
-        pdf.cell(200, 10, txt=f"Utilidad neta final: ${df['Utilidad Neta'].iloc[-1]:,.0f}", ln=1)
-        
-        # Data table
-        pdf.cell(200, 10, txt="Datos Financieros:", ln=1)
-        pdf.cell(40, 10, txt="Mes", border=1)
-        pdf.cell(40, 10, txt="Ingresos", border=1)
-        pdf.cell(40, 10, txt="Costos", border=1)
-        pdf.cell(40, 10, txt="Utilidad", border=1)
-        pdf.ln()
-        
-        for _, row in df.iterrows():
-            pdf.cell(40, 10, txt=row["Mes"], border=1)
-            pdf.cell(40, 10, txt=f"${row['Ingresos Totales']:,.0f}", border=1)
-            pdf.cell(40, 10, txt=f"${row['Costos Totales']:,.0f}", border=1)
-            pdf.cell(40, 10, txt=f"${row['Utilidad Neta']:,.0f}", border=1)
-            pdf.ln()
-        
-        return pdf.output(dest="S").encode("latin1")
-    
-    if st.button("🖨️ Generar PDF"):
-        pdf_data = create_pdf(df)
-        st.download_button(
-            label="⬇️ Descargar PDF",
-            data=pdf_data,
-            file_name=f"reporte_financiero_{datetime.now().strftime('%Y%m%d')}.pdf",
-            mime="application/pdf"
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        mostrar_desde = st.selectbox(
+            "Mostrar desde mes:", 
+            options=list(range(1, meses + 1)), 
+            index=0
+        )
+    with col2:
+        mostrar_hasta = st.selectbox(
+            "Mostrar hasta mes:", 
+            options=list(range(1, meses + 1)), 
+            index=min(11, meses - 1)
+        )
+    with col3:
+        formato_numeros = st.selectbox(
+            "Formato números:", 
+            ["Completos", "Miles (K)", "Millones (M)"]
         )
     
-    if st.button("📝 Exportar a Excel"):
-        towrite = BytesIO()
-        df.to_excel(towrite, index=False, engine="openpyxl")
-        towrite.seek(0)
-        st.download_button(
-            label="⬇️ Descargar Excel",
-            data=towrite,
-            file_name=f"datos_financieros_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-# Punto de equilibrio
-st.subheader("⚖️ Análisis de Punto de Equilibrio")
-if precio_premium > costo_variable:
-    promedio_costos_fijos = df["Costos Fijos"].mean()
-    pe = round(promedio_costos_fijos / (precio_premium - costo_variable))
-    st.markdown(f"""
-    **Punto de equilibrio:**  
-    Necesitas **{pe:,} usuarios premium** para cubrir costos fijos.  
-    Esto ocurriría aproximadamente en el **Mes {min(max(1, int(np.log(pe/max(1,usuarios_premium_inicio))/np.log(1+crecimiento_mensual)) + 1), meses)}**.
+    # Filtrar y añadir columna de inversión inicial
+    df_filtered = df[(df['Mes'] >= mostrar_desde) & (df['Mes'] <= mostrar_hasta)].copy()
+    df_filtered['Costo_Inversion_Inicial'] = inversion_inicial
+    
+    # Ajustar formato
+    if formato_numeros == "Miles (K)":
+        cols_num = ['Ingresos_Totales', 'Costos_Totales', 'Utilidad_Neta', 
+                    'Efectivo_Acumulado', 'Costos_Personal', 'Costos_Variables', 'Costo_Inversion_Inicial']
+        for col in cols_num:
+            if col in df_filtered.columns:
+                df_filtered[col] = (df_filtered[col] / 1000).round(1)
+    elif formato_numeros == "Millones (M)":
+        cols_num = ['Ingresos_Totales', 'Costos_Totales', 'Utilidad_Neta', 
+                    'Efectivo_Acumulado', 'Costos_Personal', 'Costos_Variables', 'Costo_Inversion_Inicial']
+        for col in cols_num:
+            if col in df_filtered.columns:
+                df_filtered[col] = (df_filtered[col] / 1_000_000).round(2)
+    
+    # Mostrar tabla y descripción
+    st.dataframe(
+        df_filtered.style.format({
+            'Margen_Bruto': '{:.1%}',
+            'Margen_Neto': '{:.1%}',
+            'ROI_Acumulado': '{:.1%}',
+            'Usuarios_Premium': '{:,.0f}',
+            'Usuarios_Basicos': '{:,.0f}',
+            'Total_Usuarios': '{:,.0f}'
+        }).background_gradient(subset=['Utilidad_Neta'], cmap='RdYlGn'),
+        use_container_width=True,
+        height=400
+    )
+    
+    st.markdown("""
+    **Descripción del Costo de Inversión Inicial**  
+    - La columna **Costo_Inversion_Inicial** permanece constante en cada fila: representa el capital inicial que se destinó a cubrir gastos antes de alcanzar la rentabilidad.
+    - Este monto acumula el flujo de caja negativo de los meses de lanzamiento y se “recupera” gradualmente conforme el Flujo de Efectivo acumulado se torne positivo.
+    - Sirve para comparar mes a mes cuánto de la inversión inicial aún está “pendiente de retorno”.
     """)
-else:
-    st.error("⚠️ El costo variable excede el precio de suscripción premium - el modelo no es sostenible")
     
+    st.markdown("### 📊 ESTADÍSTICAS DESCRIPTIVAS")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Ingresos y Costos**")
+        stats_df = pd.DataFrame({
+            'Ingresos Totales': df['Ingresos_Totales'].describe(),
+            'Costos Totales': df['Costos_Totales'].describe(),
+            'Utilidad Neta': df['Utilidad_Neta'].describe()
+        }).round(0)
+        st.dataframe(stats_df)
+    with col2:
+        st.markdown("**Usuarios y Métricas**")
+        stats_df2 = pd.DataFrame({
+            'Total Usuarios': df['Total_Usuarios'].describe(),
+            'Margen Bruto (%)': (df['Margen_Bruto'] * 100).describe(),
+            'ROI Acumulado (%)': (df['ROI_Acumulado'] * 100).describe()
+        }).round(1)
+        st.dataframe(stats_df2)
+
+# ================================
+# TAB 4: ANÁLISIS AVANZADO
+# ================================
+with tab4:
+    st.markdown("### 🎯 ANÁLISIS DE SENSIBILIDAD Y ESCENARIOS")
+    
+    st.markdown("#### ⚖️ Análisis de Punto de Equilibrio")
+    try:
+        break_even_mes = df[df['Utilidad_Neta'] > 0]['Mes'].iloc[0]
+        break_even_usuarios = df[df['Mes'] == break_even_mes]['Total_Usuarios'].iloc[0]
+        break_even_ingresos = df[df['Mes'] == break_even_mes]['Ingresos_Totales'].iloc[0]
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("🗓️ Mes de Break-Even", break_even_mes)
+        with col2:
+            st.metric("👥 Usuarios necesarios", f"{break_even_usuarios:,.0f}")
+        with col3:
+            st.metric("💰 Ingresos necesarios", f"${break_even_ingresos:,.0f}")
+    except IndexError:
+        st.warning("⚠️ No se alcanza el punto de equilibrio en el período proyectado")
+        costos_promedio = df['Costos_Totales'].mean()
+        precio_promedio = (precio_premium + precio_basica) / 2
+        usuarios_necesarios = costos_promedio / precio_promedio
+        st.info(f"💡 Se necesitan aproximadamente {usuarios_necesarios:,.0f} usuarios para alcanzar el equilibrio")
+    
+    st.markdown("#### 📊 Análisis de Sensibilidad")
+    sensibilidad_param = st.selectbox(
+        "Seleccionar parámetro para análisis:",
+        ["Precio Premium", "Precio Básico", "Crecimiento Mensual", "Costo Variable"]
+    )
+    if sensibilidad_param == "Precio Premium":
+        base_value = precio_premium
+        range_values = np.linspace(base_value * 0.5, base_value * 1.5, 11)
+        param_key = 'precio_premium'
+    elif sensibilidad_param == "Precio Básico":
+        base_value = precio_basica
+        range_values = np.linspace(base_value * 0.5, base_value * 1.5, 11)
+        param_key = 'precio_basica'
+    elif sensibilidad_param == "Crecimiento Mensual":
+        base_value = crecimiento_mensual * 100
+        range_values = np.linspace(0, base_value * 2, 11)
+        param_key = 'crecimiento_mensual'
+    else:
+        base_value = costo_variable
+        range_values = np.linspace(0, base_value * 2, 11)
+        param_key = 'costo_variable'
+    
+    sensibilidad_results = []
+    for value in range_values:
+        temp_params = {
+            'meses': meses,
+            'usuarios_premium_inicio': usuarios_premium_inicio,
+            'usuarios_basica_inicio': usuarios_basica_inicio,
+            'precio_premium': precio_premium,
+            'precio_basica': precio_basica,
+            'crecimiento_mensual': crecimiento_mensual,
+            'sueldos': sueldos,
+            'gracia': gracia,
+            'costos_fijos': costos_fijos,
+            'costo_variable': costo_variable,
+            'inversion_inicial': inversion_inicial,
+            'tasa_impuestos': tasa_impuestos
+        }
+        if param_key == 'precio_premium':
+            temp_params['precio_premium'] = value
+        elif param_key == 'precio_basica':
+            temp_params['precio_basica'] = value
+        elif param_key == 'crecimiento_mensual':
+            temp_params['crecimiento_mensual'] = value / 100
+        else:
+            temp_params['costo_variable'] = value
+        
+        temp_df = calcular_proyeccion_financiera(**temp_params)
+        sensibilidad_results.append({
+            'Parámetro': value,
+            'Utilidad_Final': temp_df['Utilidad_Neta'].iloc[-1],
+            'Efectivo_Final': temp_df['Efectivo_Acumulado'].iloc[-1],
+            'ROI_Final': temp_df['ROI_Acumulado'].iloc[-1]
+        })
+    
+    sens_df = pd.DataFrame(sensibilidad_results)
+    fig_sens = go.Figure()
+    fig_sens.add_trace(go.Scatter(
+        x=sens_df['Parámetro'],
+        y=sens_df['Utilidad_Final'],
+        mode='lines+markers',
+        name='Utilidad Final',
+        line=dict(color='#007bff', width=3),
+        marker=dict(size=8)
+    ))
+    fig_sens.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.7)
+    fig_sens.update_layout(
+        title=f'📈 Sensibilidad: {sensibilidad_param} vs Utilidad Final',
+        xaxis_title=sensibilidad_param,
+        yaxis_title='Utilidad Final (USD)',
+        template='plotly_white',
+        height=400
+    )
+    st.plotly_chart(fig_sens, use_container_width=True)
+    
+    st.markdown("**Resultados del Análisis de Sensibilidad**")
+    st.dataframe(
+        sens_df.style.format({
+            'Parámetro': '{:.2f}',
+            'Utilidad_Final': '${:,.0f}',
+            'Efectivo_Final': '${:,.0f}',
+            'ROI_Final': '{:.1%}'
+        }).background_gradient(subset=['Utilidad_Final'], cmap='RdYlGn'),
+        use_container_width=True
+    )
+    
+    st.markdown("#### ⚠️ Análisis de Riesgos")
+    meses_negativos = len(df[df['Utilidad_Neta'] < 0])
+    max_perdida = df['Utilidad_Neta'].min()
+    efectivo_minimo = df['Efectivo_Acumulado'].min()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📉 Meses con pérdidas", meses_negativos)
+    with col2:
+        st.metric("💸 Pérdida máxima mensual", f"${abs(max_perdida):,.0f}")
+    with col3:
+        st.metric("⚠️ Efectivo mínimo", f"${efectivo_minimo:,.0f}")
+    
+    if efectivo_minimo < 0:
+        st.error(f"🚨 **RIESGO ALTO**: Se requiere financiamiento adicional de al menos ${abs(efectivo_minimo):,.0f}")
+    elif meses_negativos > meses * 0.5:
+        st.warning("⚠️ **RIESGO MEDIO**: Más del 50% de los meses presentan pérdidas")
+    else:
+        st.success("✅ **RIESGO BAJO**: El modelo financiero es estable")
+
+# ================================
+# TAB 5: EXPORTAR
+# ================================
+with tab5:
+    st.markdown("### 📤 EXPORTAR RESULTADOS")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📊 Exportar Datos")
+        export_df = df.copy()
+        export_df['Fecha'] = pd.date_range(start='2024-01-01', periods=len(export_df), freq='M')
+        
+        # CSV
+        csv_buffer = BytesIO()
+        export_df.to_csv(csv_buffer, index=False, encoding='utf-8')
+        csv_buffer.seek(0)
+        st.download_button(
+            label="📥 Descargar CSV",
+            data=csv_buffer.getvalue(),
+            file_name=f"jobmatch_proyeccion_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            help="Descarga todos los datos en formato CSV"
+        )
+        
+        # Excel con hojas
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            export_df.to_excel(writer, sheet_name='Proyección Financiera', index=False)
+            params_df = pd.DataFrame({
+                'Parámetro': [
+                    'Duración (meses)', 'Usuarios Premium Inicial', 'Usuarios Básicos Inicial',
+                    'Precio Premium', 'Precio Básico', 'Crecimiento Mensual (%)',
+                    'Inversión Inicial', 'Tasa Impuestos (%)', 'Costo Variable'
+                ],
+                'Valor': [
+                    meses, usuarios_premium_inicio, usuarios_basica_inicio,
+                    precio_premium, precio_basica, crecimiento_mensual * 100,
+                    inversion_inicial, tasa_impuestos, costo_variable
+                ]
+            })
+            params_df.to_excel(writer, sheet_name='Parámetros', index=False)
+        excel_buffer.seek(0)
+        st.download_button(
+            label="📊 Descargar Excel",
+            data=excel_buffer.getvalue(),
+            file_name=f"jobmatch_completo_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Descarga datos completos en formato Excel con múltiples hojas"
+        )
+    
+    with col2:
+        st.markdown("#### 📋 Exportar Reporte")
+        reporte_completo = f"""
+# JOB MATCH - REPORTE FINANCIERO EJECUTIVO
+*Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}*
+
+## RESUMEN EJECUTIVO
+
+### Parámetros del Modelo
+- **Duración**: {meses} meses
+- **Usuarios iniciales**: {usuarios_premium_inicio:,} Premium + {usuarios_basica_inicio:,} Básicos
+- **Precios**: ${precio_premium} Premium / ${precio_basica} Básico
+- **Crecimiento mensual**: {crecimiento_mensual:.1%}
+- **Inversión inicial**: ${inversion_inicial:,}
+
+### Resultados Clave
+- **Usuarios finales proyectados**: {df['Total_Usuarios'].iloc[-1]:,}
+- **Ingresos mensuales finales**: ${df['Ingresos_Totales'].iloc[-1]:,}
+- **Utilidad mensual final**: ${df['Utilidad_Neta'].iloc[-1]:,}
+- **Efectivo acumulado final**: ${df['Efectivo_Acumulado'].iloc[-1]:,}
+- **ROI total**: {df['ROI_Acumulado'].iloc[-1]:.1%}
+- **Margen neto final**: {df['Margen_Neto'].iloc[-1]:.1%}
+
+### Punto de Equilibrio
+"""
+        try:
+            break_even_mes = df[df['Utilidad_Neta'] > 0]['Mes'].iloc[0]
+            reporte_completo += f"- **Mes de break-even**: {break_even_mes}\n"
+            reporte_completo += f"- **Usuarios necesarios**: {df[df['Mes'] == break_even_mes]['Total_Usuarios'].iloc[0]:,}\n"
+        except IndexError:
+            reporte_completo += "- **Break-even**: No alcanzado en el período\n"
+        
+        reporte_completo += f"""
+### Análisis de Riesgo
+- **Meses con pérdidas**: {len(df[df['Utilidad_Neta'] < 0])}
+- **Pérdida máxima mensual**: ${abs(df['Utilidad_Neta'].min()):,}
+- **Efectivo mínimo**: ${df['Efectivo_Acumulado'].min():,}
+
+### Recomendaciones
+"""
+        if df['Efectivo_Acumulado'].iloc[-1] > 0 and df['Utilidad_Neta'].iloc[-1] > 0:
+            reporte_completo += "✅ **Modelo financiero saludable y sostenible**\n"
+        elif df['Utilidad_Neta'].iloc[-1] > 0:
+            reporte_completo += "⚠️ **Modelo rentable pero requiere gestión de capital**\n"
+        else:
+            reporte_completo += "🚨 **Modelo requiere optimización urgente**\n"
+        
+        st.download_button(
+            label="📄 Descargar Reporte MD",
+            data=reporte_completo,
+            file_name=f"jobmatch_reporte_{datetime.now().strftime('%Y%m%d')}.md",
+            mime="text/markdown",
+            help="Descarga reporte ejecutivo en formato Markdown"
+        )
+        
+        config_json = {
+            "parametros": {
+                "meses": meses,
+                "usuarios_premium_inicio": usuarios_premium_inicio,
+                "usuarios_basica_inicio": usuarios_basica_inicio,
+                "precio_premium": precio_premium,
+                "precio_basica": precio_basica,
+                "crecimiento_mensual": crecimiento_mensual,
+                "inversion_inicial": inversion_inicial,
+                "tasa_impuestos": tasa_impuestos,
+                "costo_variable": costo_variable
+            },
+            "sueldos": sueldos,
+            "gracia": gracia,
+            "costos_fijos": costos_fijos,
+            "fecha_generacion": datetime.now().isoformat()
+        }
+        st.download_button(
+            label="⚙️ Descargar Configuración",
+            data=json.dumps(config_json, indent=2, ensure_ascii=False),
+            file_name=f"jobmatch_config_{datetime.now().strftime('%Y%m%d')}.json",
+            mime="application/json",
+            help="Descarga la configuración actual para reutilizar"
+        )
