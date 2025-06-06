@@ -428,7 +428,7 @@ with st.sidebar:
     with st.expander("🏦 FINANCIAMIENTO E IMPUESTOS"):
         inversion_inicial = st.number_input("💵 Inversión inicial ($)", 0, 500000, 2500,
                                           help="Capital inicial disponible")
-        tasa_impuestos = st.slider("🏛️ Tasa de impuestos (%)", 0.0, 50.0, 0, 
+        tasa_impuestos = st.slider("🏛️ Tasa de impuestos (%)", 0.0, 50.0, 1.0, 
                                  step=0.5, help="Tasa impositiva sobre utilidades")
 
 # ================================
