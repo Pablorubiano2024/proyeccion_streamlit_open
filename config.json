@@ -1,0 +1,36 @@
+{
+  "meses": 31,
+  "precio_premium": 99,
+  "precio_basica": 9,
+  "crecimiento_mensual": 0.0,
+  "usuarios_premium_inicio": 15,
+  "usuarios_basica_inicio": 30,
+  "sueldos": {
+    "CEO": 0,
+    "CTO": 0,
+    "Dev Fullstack": 2800,
+    "Diseñador UX/UI": 2300,
+    "Growth Marketer": 0,
+    "Soporte": 1800,
+    "Sales Manager": 0,
+    "CFO": 0
+  },
+  "gracia": {
+    "CEO": 0,
+    "CTO": 0,
+    "Dev Fullstack": 0,
+    "Diseñador UX/UI": 0,
+    "Growth Marketer": 0,
+    "Soporte": 0,
+    "Sales Manager": 0,
+    "CFO": 0
+  },
+  "infraestructura": 200,
+  "legales": 200,
+  "appstore": 500,
+  "marketing": 1500,
+  "otros": 300,
+  "costo_variable": 2.5,
+  "inversion_inicial": 2500,
+  "tasa_impuestos": 19.0
+}

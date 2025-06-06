@@ -359,10 +359,10 @@ with st.sidebar:
         
         col1, col2 = st.columns(2)
         with col1:
-            precio_premium = st.number_input("💰 Precio Premium ($)", 1, 200, 15, 
+            precio_premium = st.number_input("💰 Precio Premium ($)", 1, 200, 99, 
                                            help="Precio mensual suscripción premium")
         with col2:
-            precio_basica = st.number_input("💵 Precio Básico ($)", 1, 200, 7, 
+            precio_basica = st.number_input("💵 Precio Básico ($)", 1, 200, 9, 
                                           help="Precio mensual suscripción básica")
         
         crecimiento_mensual = st.slider("📈 Crecimiento usuarios/mes (%)", 
@@ -372,16 +372,16 @@ with st.sidebar:
     with st.expander("👥 BASE DE USUARIOS", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            usuarios_premium_inicio = st.number_input("👑 Premium iniciales", 0, 50000, 100)
+            usuarios_premium_inicio = st.number_input("👑 Premium iniciales", 0, 50000, 15)
         with col2:
-            usuarios_basica_inicio = st.number_input("👤 Básicos iniciales", 0, 50000, 200)
+            usuarios_basica_inicio = st.number_input("👤 Básicos iniciales", 0, 50000, 30)
     
     # Sección 3: Equipo y Sueldos
     with st.expander("👨‍💼 EQUIPO Y NÓMINA"):
         roles_data = {
-            "CEO": 3500, "CTO": 3200, "Dev Fullstack": 2800,
-            "Diseñador UX/UI": 2300, "Growth Marketer": 2500,
-            "Soporte": 1800, "Sales Manager": 2700, "CFO": 3200
+            "CEO": 0, "CTO": 0, "Dev Fullstack": 2800,
+            "Diseñador UX/UI": 1000, "Growth Marketer": 1000,
+            "Soporte": 1800, "Sales Manager": 0, "CFO": 0
         }
         
         sueldos = {}
@@ -396,7 +396,7 @@ with st.sidebar:
                     key=f"sueldo_{rol}", help=f"Sueldo mensual para {rol}"
                 )
             with col2:
-                gracia_default = 3 if rol == "CEO" else 0
+                gracia_default = 0 if rol == "CEO" else 0
                 gracia[rol] = st.number_input(
                     f"Gracia (meses)", 0, 12, gracia_default,
                     key=f"gracia_{rol}", help=f"Meses sin pago para {rol}"
@@ -405,10 +405,10 @@ with st.sidebar:
     # Sección 4: Costos Operativos
     with st.expander("💳 COSTOS OPERATIVOS"):
         st.markdown("**Costos Fijos Mensuales**")
-        infraestructura = st.number_input("☁️ Infraestructura/Hosting", 0, 20000, 1200)
-        legales = st.number_input("⚖️ Legales/Contabilidad", 0, 10000, 800)
+        infraestructura = st.number_input("☁️ Infraestructura/Hosting", 0, 20000, 200)
+        legales = st.number_input("⚖️ Legales/Contabilidad", 0, 10000, 100)
         appstore = st.number_input("📱 Comisiones App Stores", 0, 10000, 500)
-        marketing = st.number_input("📢 Marketing/Publicidad", 0, 20000, 1500)
+        marketing = st.number_input("📢 Marketing/Publicidad", 0, 20000, 500)
         otros = st.number_input("📦 Otros gastos fijos", 0, 10000, 300)
         
         costos_fijos = {
@@ -426,7 +426,7 @@ with st.sidebar:
     
     # Sección 5: Financiamiento
     with st.expander("🏦 FINANCIAMIENTO E IMPUESTOS"):
-        inversion_inicial = st.number_input("💵 Inversión inicial ($)", 0, 500000, 25000,
+        inversion_inicial = st.number_input("💵 Inversión inicial ($)", 0, 500000, 2500,
                                           help="Capital inicial disponible")
         tasa_impuestos = st.slider("🏛️ Tasa de impuestos (%)", 0.0, 50.0, 19.0, 
                                  step=0.5, help="Tasa impositiva sobre utilidades")
